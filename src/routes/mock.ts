@@ -4,10 +4,12 @@ import { QueryInclude } from '../models';
 import Tree from './utils/tree'
 import urlUtils from './utils/url'
 import * as querystring from 'querystring'
+import { Sequelize } from 'sequelize-typescript';
 
 const attributes: any = { exclude: [] }
 const pt = require('node-print').pt
 const beautify = require('js-beautify').js_beautify
+const Op = Sequelize.Op
 
 // 检测是否存在重复接口，会在返回的插件 JS 中提示。同时也会在编辑器中提示。
 const parseDuplicatedInterfaces = (repository: Repository) => {
@@ -111,7 +113,6 @@ const REG_URL_METHOD = /^\/?(get|post|delete|put)/i
 router.all('/app/mock/:repositoryId(\\d+)/:url(.+)', async (ctx) => {
   let app: any = ctx.app
   app.counter.mock++
-
   let { repositoryId, url } = ctx.params
   let method = ctx.request.method
   repositoryId = +repositoryId
@@ -121,18 +122,15 @@ router.all('/app/mock/:repositoryId(\\d+)/:url(.+)', async (ctx) => {
     REG_URL_METHOD.lastIndex = -1
     url = url.replace(REG_URL_METHOD, '')
   }
-  // if(process.env.NODE_ENV === 'development') {
-  //   console.log({repositoryId, url, method})
-  // }
 
   let urlWithoutPrefixSlash = /(\/)?(.*)/.exec(url)[2]
-  let urlWithoutSearch
-  try {
-    let urlParts = new URL(url)
-    urlWithoutSearch = `${urlParts.origin}${urlParts.pathname}`
-  } catch (e) {
-    urlWithoutSearch = url
-  }
+  // let urlWithoutSearch
+  // try {
+    // let urlParts = new URL(url)
+    // urlWithoutSearch = `${urlParts.origin}${urlParts.pathname}`
+  // } catch (e) {
+    // urlWithoutSearch = url
+  // }
   // DONE 2.3 腐烂的 KISSY
   // KISSY 1.3.2 会把路径中的 // 替换为 /。在浏览器端拦截跨域请求时，需要 encodeURIComponent(url) 以防止 http:// 被替换为 http:/。但是同时也会把参数一起编码，导致 route 的 url 部分包含了参数。
   // 所以这里重新解析一遍！！！
@@ -140,15 +138,31 @@ router.all('/app/mock/:repositoryId(\\d+)/:url(.+)', async (ctx) => {
   let repository = await Repository.findById(repositoryId)
   let collaborators: Repository[] = (await repository.$get('collaborators')) as Repository[]
   let itf
+  // console.log([urlWithoutPrefixSlash, '/' + urlWithoutPrefixSlash, urlWithoutSearch])
 
-  itf = await Interface.findOne({
+  const matchedItfList = await Interface.findAll({
     attributes,
     where: {
       repositoryId: [repositoryId, ...collaborators.map(item => item.id)],
       method,
-      url: [urlWithoutPrefixSlash, '/' + urlWithoutPrefixSlash, urlWithoutSearch],
-    },
+      url: {
+        [Op.like]: `%${urlWithoutPrefixSlash}%`,
+      }
+    }
   })
+
+  if (matchedItfList) {
+    for (const item of matchedItfList) {
+      itf = item
+      let url = item.url
+      if (url.charAt(0) === '/') {
+        url = url.substring(1)
+      }
+      if (url === urlWithoutPrefixSlash) {
+        break
+      }
+    }
+  }
 
   if (!itf) {
     // try RESTFul API search...
@@ -248,6 +262,9 @@ router.get('/app/mock/data/:interfaceId', async (ctx) => {
 
   let data = Tree.ArrayToTreeToTemplateToData(properties, requestData)
   ctx.type = 'json'
+  if (data._root_) {
+    data = data._root_
+  }
   ctx.body = JSON.stringify(data, undefined, 2)
 })
 
